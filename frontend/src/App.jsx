@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { MapboxOverlay } from '@deck.gl/mapbox';
-import { GeoJsonLayer } from '@deck.gl/layers';
+import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
 import Plotly from 'plotly.js-dist-min';
-import { Eye, EyeOff, Layers, Radio, ShieldCheck } from 'lucide-react';
+import { Crosshair, Eye, EyeOff, Layers, MapPin, Radio, ShieldCheck } from 'lucide-react';
 
 const LEGEND_ITEMS = [
   { label: 'Healthy Crop (RGB & SWIR Normal)', color: 'rgb(34, 197, 94)' },
@@ -13,9 +13,14 @@ const LEGEND_ITEMS = [
   { label: 'Nutrient Deficiency (Chlorophyll Dip)', color: 'rgb(245, 158, 11)' },
 ];
 
+const HALF_W = (128 * 0.000148) / 2;
+const HALF_H = (128 * 0.000141) / 2;
+
 export default function App() {
   const [week, setWeek] = useState(3);
   const [showAiLayer, setShowAiLayer] = useState(true);
+  const [moveFarmMode, setMoveFarmMode] = useState(false);
+  const [farmCenter, setFarmCenter] = useState(null);
   const [prediction, setPrediction] = useState(null);
   const [spectrum, setSpectrum] = useState(null);
   const [hovered, setHovered] = useState(null);
@@ -31,12 +36,63 @@ export default function App() {
   const mapRef = useRef(null);
   const overlayRef = useRef(null);
   const chartRef = useRef(null);
+
   const weekRef = useRef(week);
+  const predictionRef = useRef(prediction);
+  const farmCenterRef = useRef(farmCenter);
+  const moveFarmModeRef = useRef(moveFarmMode);
   const pixelPickedRef = useRef(false);
 
+  useEffect(() => { weekRef.current = week; }, [week]);
+  useEffect(() => { predictionRef.current = prediction; }, [prediction]);
+  useEffect(() => { farmCenterRef.current = farmCenter; }, [farmCenter]);
   useEffect(() => {
-    weekRef.current = week;
-  }, [week]);
+    moveFarmModeRef.current = moveFarmMode;
+    const map = mapRef.current;
+    if (!map) return;
+    map.getCanvas().style.cursor = moveFarmMode ? 'crosshair' : '';
+    if (moveFarmMode) {
+      map.doubleClickZoom.disable();
+    } else {
+      map.doubleClickZoom.enable();
+    }
+  }, [moveFarmMode]);
+
+  const relocateFarmTo = (lng, lat) => {
+    if (!moveFarmModeRef.current) return false;
+    moveFarmModeRef.current = false;
+    pixelPickedRef.current = false;
+    setMoveFarmMode(false);
+
+    // Immediately shift the green 1,000-acre boundary box to the clicked field
+    const optimisticBounds = {
+      west: lng - HALF_W,
+      east: lng + HALF_W,
+      south: lat - HALF_H,
+      north: lat + HALF_H,
+      center: [Number(lng.toFixed(5)), Number(lat.toFixed(5))],
+    };
+    setPrediction((prev) =>
+      prev
+        ? {
+            ...prev,
+            bounds: optimisticBounds,
+            geojson: { type: 'FeatureCollection', features: [] },
+          }
+        : null
+    );
+    setSpectrum(null);
+    setFarmCenter({ lat, lon: lng });
+
+    if (mapRef.current) {
+      mapRef.current.easeTo({
+        center: [lng, lat],
+        zoom: Math.max(mapRef.current.getZoom(), 14.2),
+        duration: 500,
+      });
+    }
+    return true;
+  };
 
   // 1. Initialize MapLibre + Deck.gl overlay once
   useEffect(() => {
@@ -80,32 +136,79 @@ export default function App() {
         ],
       },
       center: [78.3595, 17.461],
-      zoom: 15.0,
+      zoom: 14.5,
       maxZoom: 18,
-      pitch: 15,
+      pitch: 0,
     });
+
     map.addControl(new maplibregl.NavigationControl(), 'top-left');
 
-    const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
+    const overlay = new MapboxOverlay({
+      interleaved: false,
+      layers: [],
+      onClick: (info) => {
+        if (moveFarmModeRef.current && info?.coordinate) {
+          relocateFarmTo(info.coordinate[0], info.coordinate[1]);
+        }
+      },
+    });
     map.addControl(overlay);
 
-    // Clicking healthy canopy outside stressed polygons inspects that GPS coordinate
     map.on('click', async (e) => {
+      const { lng, lat } = e.lngLat;
+
+      if (relocateFarmTo(lng, lat)) {
+        return;
+      }
+
       if (pixelPickedRef.current) {
         pixelPickedRef.current = false;
         return;
       }
-      const { lng, lat } = e.lngLat;
+
+      const pred = predictionRef.current;
+      if (!pred) return;
+      const { west, south, east, north } = pred.bounds;
+
+      if (lng < west || lng > east || lat < south || lat > north) {
+        setSelectedZone({
+          label: 'Outside Monitored Farm Block',
+          confidence: 1.0,
+          action: 'Click inside the green square to inspect crops, or click "Move Farm Block" to analyze here',
+        });
+        return;
+      }
+
+      const col = Math.min(127, Math.max(0, Math.floor(((lng - west) / (east - west)) * 128)));
+      const row = Math.min(127, Math.max(0, Math.floor(((north - lat) / (north - south)) * 128)));
+
+      const matchedFeature = pred.geojson?.features?.find(
+        (f) => f.properties.row === row && f.properties.col === col
+      );
+
+      if (matchedFeature) {
+        setSelectedZone({
+          label: matchedFeature.properties.label,
+          confidence: matchedFeature.properties.confidence,
+          action: matchedFeature.properties.action,
+        });
+      } else {
+        setSelectedZone({
+          label: 'Healthy Crop Canopy',
+          confidence: 0.99,
+          action: 'No intervention required — chlorophyll & SWIR curves normal',
+        });
+      }
+
       try {
-        const res = await fetch(`/api/spectrum/${weekRef.current}?lat=${lat}&lon=${lng}`);
+        const fc = farmCenterRef.current;
+        const farmQuery = fc ? `&farm_lat=${fc.lat}&farm_lon=${fc.lon}` : '';
+        const res = await fetch(
+          `/api/spectrum/${weekRef.current}?row=${row}&col=${col}${farmQuery}`
+        );
         if (res.ok) {
           const data = await res.json();
           setSpectrum(data);
-          setSelectedZone({
-            label: 'Healthy Crop Canopy',
-            confidence: 0.99,
-            action: 'No intervention required — chlorophyll & SWIR curves normal',
-          });
         }
       } catch (err) {
         console.error('Spectrum fetch error:', err);
@@ -121,7 +224,7 @@ export default function App() {
     };
   }, []);
 
-  // 2. Fetch weekly 3D-CNN + ViT predictions & default blight hotspot spectrum
+  // 2. Fetch live 3D-CNN + ViT predictions & hotspot spectrum whenever week or farmCenter changes
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -129,16 +232,26 @@ export default function App() {
 
     async function loadWeekData() {
       try {
-        const [predRes, specRes] = await Promise.all([
-          fetch(`/api/predict/${week}`),
-          fetch(`/api/spectrum/${week}`),
-        ]);
+        const predUrl = farmCenter
+          ? `/api/predict/${week}?lat=${farmCenter.lat}&lon=${farmCenter.lon}`
+          : `/api/predict/${week}`;
 
-        if (!predRes.ok || !specRes.ok) {
+        const predRes = await fetch(predUrl);
+        if (!predRes.ok) {
           throw new Error('Backend API unreachable. Start FastAPI on port 8000.');
         }
-
         const predData = await predRes.json();
+
+        const hotspot = predData.default_hotspot || { row: 58, col: 52 };
+        const farmQuery = farmCenter
+          ? `&farm_lat=${farmCenter.lat}&farm_lon=${farmCenter.lon}`
+          : '';
+        const specRes = await fetch(
+          `/api/spectrum/${week}?row=${hotspot.row}&col=${hotspot.col}${farmQuery}`
+        );
+        if (!specRes.ok) {
+          throw new Error('Failed to fetch hyperspectral pixel signature.');
+        }
         const specData = await specRes.json();
 
         if (!active) return;
@@ -160,9 +273,9 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [week]);
+  }, [week, farmCenter]);
 
-  // 3. Render Deck.gl GeoJSON stress polygons & 1,000-acre farm boundary
+  // 3. Render Deck.gl GeoJSON stress polygons, farm boundary, and selected spot pin
   useEffect(() => {
     if (!overlayRef.current || !prediction) return;
 
@@ -193,17 +306,17 @@ export default function App() {
         data: farmBoundaryGeoJson,
         filled: true,
         stroked: true,
-        getFillColor: [34, 197, 94, 42],
-        getLineColor: [52, 211, 153, 210],
+        getFillColor: [34, 197, 94, 32],
+        getLineColor: [52, 211, 153, 225],
         getLineWidth: 3,
         lineWidthMinPixels: 2,
       }),
     ];
 
-    if (showAiLayer) {
+    if (showAiLayer && prediction.geojson?.features?.length > 0) {
       layers.push(
         new GeoJsonLayer({
-          id: `stress-zones-week-${week}`,
+          id: `stress-zones-${week}-${west.toFixed(4)}-${north.toFixed(4)}`,
           data: prediction.geojson,
           pickable: true,
           filled: true,
@@ -213,6 +326,10 @@ export default function App() {
             setHovered(info.object ? info.object.properties : null);
           },
           onClick: async (info) => {
+            if (moveFarmModeRef.current && info?.coordinate) {
+              relocateFarmTo(info.coordinate[0], info.coordinate[1]);
+              return;
+            }
             if (!info.object) return;
             pixelPickedRef.current = true;
             const props = info.object.properties;
@@ -222,8 +339,10 @@ export default function App() {
               action: props.action,
             });
             try {
+              const fc = farmCenterRef.current;
+              const farmQuery = fc ? `&farm_lat=${fc.lat}&farm_lon=${fc.lon}` : '';
               const res = await fetch(
-                `/api/spectrum/${weekRef.current}?row=${props.row}&col=${props.col}`
+                `/api/spectrum/${weekRef.current}?row=${props.row}&col=${props.col}${farmQuery}`
               );
               if (res.ok) {
                 const specData = await res.json();
@@ -234,14 +353,31 @@ export default function App() {
             }
           },
           updateTriggers: {
-            getFillColor: [week, showAiLayer],
+            getFillColor: [week, showAiLayer, west, north],
           },
         })
       );
     }
 
+    if (spectrum) {
+      layers.push(
+        new ScatterplotLayer({
+          id: 'selected-spot-pin',
+          data: [{ position: [spectrum.lon, spectrum.lat] }],
+          getPosition: (d) => d.position,
+          getFillColor: [56, 189, 248, 220],
+          getLineColor: [255, 255, 255, 255],
+          stroked: true,
+          filled: true,
+          radiusMinPixels: 7,
+          radiusMaxPixels: 12,
+          lineWidthMinPixels: 2.5,
+        })
+      );
+    }
+
     overlayRef.current.setProps({ layers });
-  }, [prediction, showAiLayer, week]);
+  }, [prediction, showAiLayer, week, spectrum]);
 
   // 4. Render 200-band Plotly hyperspectral reflectance curve
   useEffect(() => {
@@ -428,9 +564,32 @@ export default function App() {
               <Layers size={16} color="#38bdf8" />
               Geospatial Disease Map — Week {week}
             </span>
-            <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-              {loading ? 'Running 3D-CNN + ViT inference...' : 'Click any pixel to inspect 200 bands'}
-            </span>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <button
+                onClick={() => setMoveFarmMode((prev) => !prev)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '5px 10px',
+                  borderRadius: '8px',
+                  border: moveFarmMode ? '1px solid #38bdf8' : '1px solid #334155',
+                  background: moveFarmMode ? 'rgba(56, 189, 248, 0.2)' : '#0f172a',
+                  color: moveFarmMode ? '#7dd3fc' : '#cbd5e1',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {moveFarmMode ? <Crosshair size={14} /> : <MapPin size={14} />}
+                {moveFarmMode ? 'Click Target Field on Map...' : 'Move Farm Block'}
+              </button>
+
+              <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                {loading ? 'Analyzing field terrain...' : 'Click inside green block'}
+              </span>
+            </div>
           </div>
 
           <div className="map-wrapper">
