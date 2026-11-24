@@ -1,0 +1,78 @@
+{
+  "test_week": 3,
+  "total_pixels_evaluated": 16384,
+  "pca_components": 30,
+  "pca_variance_retained_pct": 70.81,
+  "overall_accuracy_pct": 99.2004,
+  "class_names": [
+    "Healthy Crop",
+    "Early Fungal Blight",
+    "Water Stress",
+    "Nutrient Deficiency"
+  ],
+  "confusion_matrix": [
+    [
+      15820,
+      37,
+      50,
+      42
+    ],
+    [
+      0,
+      89,
+      0,
+      0
+    ],
+    [
+      2,
+      0,
+      195,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      149
+    ]
+  ],
+  "classification_report": {
+    "Healthy Crop": {
+      "precision": 0.999873593730249,
+      "recall": 0.9919117186030472,
+      "f1-score": 0.9958767429416764,
+      "support": 15949.0
+    },
+    "Early Fungal Blight": {
+      "precision": 0.7063492063492064,
+      "recall": 1.0,
+      "f1-score": 0.827906976744186,
+      "support": 89.0
+    },
+    "Water Stress": {
+      "precision": 0.7959183673469388,
+      "recall": 0.9898477157360406,
+      "f1-score": 0.8823529411764706,
+      "support": 197.0
+    },
+    "Nutrient Deficiency": {
+      "precision": 0.7801047120418848,
+      "recall": 1.0,
+      "f1-score": 0.8764705882352941,
+      "support": 149.0
+    },
+    "accuracy": 0.99200439453125,
+    "macro avg": {
+      "precision": 0.8205614698670698,
+      "recall": 0.9954398585847719,
+      "f1-score": 0.8956518122744067,
+      "support": 16384.0
+    },
+    "weighted avg": {
+      "precision": 0.9938281583392583,
+      "recall": 0.99200439453125,
+      "f1-score": 0.992513399729361,
+      "support": 16384.0
+    }
+  }
+}
