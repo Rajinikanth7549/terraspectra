@@ -53,3 +53,12 @@ def test_hybrid_network_tensor_shapes():
         logits = model(dummy_patches)
     assert logits.shape == (2, 4)
     assert not torch.isnan(logits).any()
+
+def test_spray_prescription_endpoint():
+    response = client.get("/api/prescription/3?min_confidence=0.75")
+    assert response.status_code == 200
+    assert "attachment;" in response.headers.get("content-disposition", "")
+    payload = response.json()
+    assert payload["type"] == "FeatureCollection"
+    assert payload["metadata"]["actionable_zones"] == len(payload["features"])
+    assert all(f["properties"]["confidence"] >= 0.75 for f in payload["features"])

@@ -101,3 +101,26 @@ def inspect_pixel_spectrum(
     )
     target["healthy_reflectance"] = healthy_ref["reflectance"]
     return target
+from fastapi.responses import JSONResponse
+from app.prescription import build_spray_prescription
+
+
+@app.get("/api/prescription/{week}")
+def get_spray_prescription(
+    week: int,
+    min_confidence: float = 0.75,
+    lat: float | None = None,
+    lon: float | None = None,
+):
+    if week < 1 or week > 4:
+        raise HTTPException(status_code=400, detail="Week must be between 1 and 4.")
+    pred = engine.predict_week(week=week, center_lat=lat, center_lon=lon)
+    geojson_payload = build_spray_prescription(
+        pred, min_confidence=min_confidence, lat=lat, lon=lon
+    )
+    return JSONResponse(
+        content=geojson_payload,
+        headers={
+            "Content-Disposition": f'attachment; filename="terraspectra_week{week}_prescription.geojson"'
+        },
+    )
