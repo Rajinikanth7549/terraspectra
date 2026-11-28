@@ -4,7 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
 import Plotly from 'plotly.js-dist-min';
-import { Crosshair, Eye, EyeOff, Layers, MapPin, Radio, ShieldCheck } from 'lucide-react';
+import { Crosshair, Download, Eye, EyeOff, Layers, MapPin, Radio, ShieldCheck } from 'lucide-react';
 
 const LEGEND_ITEMS = [
   { label: 'Healthy Crop (RGB & SWIR Normal)', color: 'rgb(34, 197, 94)' },
@@ -30,7 +30,30 @@ export default function App() {
     action: 'Targeted fungicide spot-spray (Red Edge/SWIR anomaly)',
   });
   const [loading, setLoading] = useState(true);
+  const [downloadingRx, setDownloadingRx] = useState(false);
   const [error, setError] = useState('');
+
+  const handleDownloadPrescription = async () => {
+    setDownloadingRx(true);
+    try {
+      const coords = farmCenter ? `&lat=${farmCenter.lat}&lon=${farmCenter.lon}` : '';
+      const res = await fetch(`/api/prescription/${week}?min_confidence=0.75${coords}`);
+      if (!res.ok) throw new Error('Failed to generate sprayer GeoJSON prescription.');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `terraspectra_week${week}_prescription.geojson`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDownloadingRx(false);
+    }
+  };
 
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -503,6 +526,16 @@ export default function App() {
           >
             {showAiLayer ? <Eye size={16} /> : <EyeOff size={16} />}
             {showAiLayer ? 'AI Hyperspectral Layer: ON' : 'Standard RGB View (Hidden Stress)'}
+          </button>
+
+          <button
+            className="toggle-btn"
+            onClick={handleDownloadPrescription}
+            disabled={downloadingRx}
+            title="Download confidence-filtered GeoJSON for variable-rate sprayers"
+          >
+            <Download size={16} />
+            {downloadingRx ? 'Exporting...' : 'Export Spray GeoJSON'}
           </button>
         </div>
       </header>
